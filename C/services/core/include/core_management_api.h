@@ -11,7 +11,10 @@
  */
 #include <management_api.h>
 #include <configuration_manager.h>
-
+#include <vector>
+#include <string>
+#include <mutex>
+#include <map>
 
 #define REGISTER_SERVICE		"/fledge/service"
 #define UNREGISTER_SERVICE		"/fledge/service/([0-9A-F][0-9A-F\\-]*)"
@@ -27,11 +30,18 @@
 #define REGISTER_CATEGORY_INTEREST	"/fledge/interest"	// TODO implment this, right now it's a fake.
 #define GET_SERVICE			REGISTER_SERVICE
 
+// ADD THESE NEW ENDPOINTS WITH ASSET SUPPORT
+#define SOUTH_DATA_ENDPOINT     "/south-data/([A-Za-z0-9_\\-]+)"  // /south-data/assetname
+#define ANGULAR_DATA_ENDPOINT   "/api/realtime/([A-Za-z0-9_\\-]+)"  // /api/realtime/assetname
+#define ANGULAR_ALL_DATA_ENDPOINT "/api/realtime"  // Get all assets
+
 #define UUID_COMPONENT			1
 #define CATEGORY_NAME_COMPONENT		1
 #define CATEGORY_ITEM_COMPONENT		2
 #define ITEM_VALUE_NAME			3
 #define CHILD_CATEGORY_COMPONENT	3
+// ADD NEW COMPONENT
+#define ASSET_NAME_COMPONENT    1
 
 using HttpServer = SimpleWeb::Server<SimpleWeb::HTTP>;
 
@@ -79,6 +89,14 @@ class CoreManagementApi : public ManagementApi {
 		void			defaultResource(std::shared_ptr<HttpServer::Response> response,
 							std::shared_ptr<HttpServer::Request> request);
 
+		// ADD THESE NEW METHODS
+		void			handleSouthDataPost(std::shared_ptr<HttpServer::Response> response,
+							std::shared_ptr<HttpServer::Request> request);
+		void			handleAngularDataGet(std::shared_ptr<HttpServer::Response> response,
+							std::shared_ptr<HttpServer::Request> request);
+		void			handleAllAssetsDataGet(std::shared_ptr<HttpServer::Response> response,
+							std::shared_ptr<HttpServer::Request> request);
+
 	private:
 		void			errorResponse(std::shared_ptr<HttpServer::Response> response,
 						      SimpleWeb::StatusCode statusCode,
@@ -98,5 +116,9 @@ class CoreManagementApi : public ManagementApi {
 	private:
 		static CoreManagementApi*	m_instance;
 		ConfigurationManager*		m_config;
+		
+		// ADD THESE NEW MEMBERS
+		std::map<std::string, std::vector<std::string>>	m_assetDataBuffer;  // asset_name -> data_vector
+		std::mutex			m_bufferMutex;
 };
 #endif

@@ -49,6 +49,7 @@ void replaceSubstr(std::string& str, const std::string& from, const std::string&
  * storage service when running tests.
  * TODO fully implemtent the getService API call
  */
+
 void getServiceWrapper(shared_ptr<HttpServer::Response> response,
 		       shared_ptr<HttpServer::Request> request)
 {
@@ -94,7 +95,27 @@ void getServiceWrapper(shared_ptr<HttpServer::Response> response,
 			  <<  "Content-type: application/json\r\n\r\n" << errorMsg;
 	}
 }
+// ADD THESE FUNCTION WRAPPERS
+void southDataPostWrapper(std::shared_ptr<HttpServer::Response> response,
+                         std::shared_ptr<HttpServer::Request> request)
+{
+    CoreManagementApi *api = CoreManagementApi::getInstance();
+    api->handleSouthDataPost(response, request);
+}
 
+void angularDataGetWrapper(std::shared_ptr<HttpServer::Response> response,
+                          std::shared_ptr<HttpServer::Request> request)
+{
+    CoreManagementApi *api = CoreManagementApi::getInstance();
+    api->handleAngularDataGet(response, request);
+}
+
+void angularAllDataGetWrapper(std::shared_ptr<HttpServer::Response> response,
+                             std::shared_ptr<HttpServer::Request> request)
+{
+    CoreManagementApi *api = CoreManagementApi::getInstance();
+    api->handleAllAssetsDataGet(response, request);
+}
 /**
  * Wrapper for service registration method
  */
@@ -195,6 +216,7 @@ void deleteChildCategoryWrapper(shared_ptr<HttpServer::Response> response,
 /**
  * Wrapper for create category
  */
+ 
 void createCategoryWrapper(shared_ptr<HttpServer::Response> response,
 			   shared_ptr<HttpServer::Request> request)
 {
@@ -367,25 +389,29 @@ void CoreManagementApi::defaultResource(shared_ptr<HttpServer::Response> respons
 CoreManagementApi::CoreManagementApi(const string& name,
 				     const unsigned short port) : ManagementApi(name, port)
 {
+// Setup supported URL and HTTP methods
+// Services
+m_server->resource[REGISTER_SERVICE]["POST"] = registerMicroServiceWrapper;
+m_server->resource[UNREGISTER_SERVICE]["DELETE"] = unRegisterMicroServiceWrapper;
 
-	// Setup supported URL and HTTP methods
-	// Services
-	m_server->resource[REGISTER_SERVICE]["POST"] = registerMicroServiceWrapper;
-	m_server->resource[UNREGISTER_SERVICE]["DELETE"] = unRegisterMicroServiceWrapper;
+m_server->resource[GET_SERVICE]["GET"] = getServiceWrapper;
 
-	m_server->resource[GET_SERVICE]["GET"] = getServiceWrapper;
+// Register category interest
+// TODO implement this, right now it's just a fake
+m_server->resource[REGISTER_CATEGORY_INTEREST]["POST"] = registerInterestWrapper;
 
-	// Register category interest
-	// TODO implement this, right now it's just a fake
-	m_server->resource[REGISTER_CATEGORY_INTEREST]["POST"] = registerInterestWrapper;
+// ADD THESE THREE LINES HERE
+m_server->resource[SOUTH_DATA_ENDPOINT]["POST"] = southDataPostWrapper;
+m_server->resource[ANGULAR_DATA_ENDPOINT]["GET"] = angularDataGetWrapper;
+m_server->resource[ANGULAR_ALL_DATA_ENDPOINT]["GET"] = angularAllDataGetWrapper;
 
-	// Default wrapper
-	m_server->default_resource["GET"] = defaultWrapper;
-	m_server->default_resource["PUT"] = defaultWrapper;
-	m_server->default_resource["POST"] = defaultWrapper;
-	m_server->default_resource["DELETE"] = defaultWrapper;
-	m_server->default_resource["HEAD"] = defaultWrapper;
-	m_server->default_resource["CONNECT"] = defaultWrapper;
+// Default wrapper
+m_server->default_resource["GET"] = defaultWrapper;
+m_server->default_resource["PUT"] = defaultWrapper;
+m_server->default_resource["POST"] = defaultWrapper;
+m_server->default_resource["DELETE"] = defaultWrapper;
+m_server->default_resource["HEAD"] = defaultWrapper;
+m_server->default_resource["CONNECT"] = defaultWrapper;
 
 	// Set the instance
 	m_instance = this;
@@ -525,6 +551,97 @@ ostringstream convert;
 	} catch (exception ex) {
 		internalError(response, ex);
 	}
+}
+// ADD THESE IMPLEMENTATION METHODS
+void CoreManagementApi::handleSouthDataPost(std::shared_ptr<HttpServer::Response> response,
+                                           std::shared_ptr<HttpServer::Request> request)
+{
+    try {
+        string assetName = request->path_match[ASSET_NAME_COMPONENT];
+        string payload = request->content.string();
+        
+        // Add timestamp
+        time_t now = time(0);
+        char timestamp[100];
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+        
+        string dataEntry = "{\"received_at\":\"" + string(timestamp) + "\",\"data\":" + payload + "}";
+        
+        // Store in memory (thread-safe)
+        {
+            std::lock_guard<std::mutex> lock(m_bufferMutex);
+            m_assetDataBuffer[assetName].push_back(dataEntry);
+            
+            // Keep only last 50 entries per asset
+            if (m_assetDataBuffer[assetName].size() > 50) {
+                m_assetDataBuffer[assetName].erase(m_assetDataBuffer[assetName].begin());
+            }
+        }
+        
+        string successResponse = "{\"status\":\"success\",\"asset\":\"" + assetName + "\"}";
+        respond(response, successResponse);
+        
+        Logger *logger = Logger::getLogger();
+        logger->info("Real-time data received for asset: %s", assetName.c_str());
+        
+    } catch (exception& ex) {
+        internalError(response, ex);
+    }
+}
+
+void CoreManagementApi::handleAngularDataGet(std::shared_ptr<HttpServer::Response> response,
+                                            std::shared_ptr<HttpServer::Request> request)
+{
+    try {
+        string assetName = request->path_match[ASSET_NAME_COMPONENT];
+        
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+        
+        string jsonResponse = "[";
+        auto it = m_assetDataBuffer.find(assetName);
+        if (it != m_assetDataBuffer.end()) {
+            const std::vector<std::string>& assetData = it->second;
+            for (size_t i = 0; i < assetData.size(); ++i) {
+                if (i > 0) jsonResponse += ",";
+                jsonResponse += assetData[i];
+            }
+        }
+        jsonResponse += "]";
+        
+        respond(response, jsonResponse);
+        
+    } catch (exception& ex) {
+        internalError(response, ex);
+    }
+}
+
+void CoreManagementApi::handleAllAssetsDataGet(std::shared_ptr<HttpServer::Response> response,
+                                              std::shared_ptr<HttpServer::Request> request)
+{
+    try {
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+        
+        string jsonResponse = "{";
+        bool firstAsset = true;
+        for (const auto& pair : m_assetDataBuffer) {
+            if (!firstAsset) jsonResponse += ",";
+            jsonResponse += "\"" + pair.first + "\":[";
+            
+            const std::vector<std::string>& assetData = pair.second;
+            for (size_t i = 0; i < assetData.size(); ++i) {
+                if (i > 0) jsonResponse += ",";
+                jsonResponse += assetData[i];
+            }
+            jsonResponse += "]";
+            firstAsset = false;
+        }
+        jsonResponse += "}";
+        
+        respond(response, jsonResponse);
+        
+    } catch (exception& ex) {
+        internalError(response, ex);
+    }
 }
 /**
  * Send back an error response
