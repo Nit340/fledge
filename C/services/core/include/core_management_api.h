@@ -112,13 +112,13 @@ class CoreManagementApi : public ManagementApi {
 		bool			getConfigurationManager(const std::string& address,
 								const unsigned short port);
 		void			setConfigurationEntryPoints();
+		
 
 	private:
 		static CoreManagementApi*	m_instance;
 		ConfigurationManager*		m_config;
 		
-		// ADD THESE NEW MEMBERS
-		std::map<std::string, std::vector<std::string>>	m_assetDataBuffer;  // asset_name -> data_vector
-		std::mutex			m_bufferMutex;
+    std::map<std::string, std::vector<std::string>>	m_assetDataBuffer;  // asset_name -> data_vector
+    std::mutex			m_bufferMutex;
 };
 #endif

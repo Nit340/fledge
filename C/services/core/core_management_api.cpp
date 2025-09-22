@@ -11,6 +11,13 @@
 #include <service_registry.h>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
+#include <logger.h>
+#include <configuration_manager.h>
+#include <service_record.h>
+#include <config_category.h>
+#include <config_categories.h>
+#include <management_api.h>
+#include <simple_web_server.hpp>  // or whatever the web server include is>
 
 using namespace std;
 using HttpServer = SimpleWeb::Server<SimpleWeb::HTTP>;
@@ -258,6 +265,118 @@ void optionsWrapper(std::shared_ptr<HttpServer::Response> response,
                     std::shared_ptr<HttpServer::Request> request)
 {
     handleOptions(response, request);
+}
+// ADD THESE FUNCTION WRAPPERS
+void southDataPostWrapper(std::shared_ptr<HttpServer::Response> response,
+                         std::shared_ptr<HttpServer::Request> request)
+{
+    CoreManagementApi *api = CoreManagementApi::getInstance();
+    api->handleSouthDataPost(response, request);
+}
+
+void angularDataGetWrapper(std::shared_ptr<HttpServer::Response> response,
+                          std::shared_ptr<HttpServer::Request> request)
+{
+    CoreManagementApi *api = CoreManagementApi::getInstance();
+    api->handleAngularDataGet(response, request);
+}
+
+void angularAllDataGetWrapper(std::shared_ptr<HttpServer::Response> response,
+                             std::shared_ptr<HttpServer::Request> request)
+{
+    CoreManagementApi *api = CoreManagementApi::getInstance();
+    api->handleAllAssetsDataGet(response, request);
+}
+// ADD THESE IMPLEMENTATION METHODS
+void CoreManagementApi::handleSouthDataPost(std::shared_ptr<HttpServer::Response> response,
+                                           std::shared_ptr<HttpServer::Request> request)
+{
+    try {
+        string assetName = request->path_match[ASSET_NAME_COMPONENT];
+        string payload = request->content.string();
+        
+        // Add timestamp
+        time_t now = time(0);
+        char timestamp[100];
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+        
+        string dataEntry = "{\"received_at\":\"" + string(timestamp) + "\",\"data\":" + payload + "}";
+        
+        // Store in memory (thread-safe)
+        {
+            std::lock_guard<std::mutex> lock(m_bufferMutex);
+            m_assetDataBuffer[assetName].push_back(dataEntry);
+            
+            // Keep only last 50 entries per asset
+            if (m_assetDataBuffer[assetName].size() > 50) {
+                m_assetDataBuffer[assetName].erase(m_assetDataBuffer[assetName].begin());
+            }
+        }
+        
+        string successResponse = "{\"status\":\"success\",\"asset\":\"" + assetName + "\"}";
+        respond(response, successResponse);
+        
+        Logger *logger = Logger::getLogger();
+        logger->info("Real-time data received for asset: %s", assetName.c_str());
+        
+    } catch (exception& ex) {
+        internalError(response, ex);
+    }
+}
+
+void CoreManagementApi::handleAngularDataGet(std::shared_ptr<HttpServer::Response> response,
+                                            std::shared_ptr<HttpServer::Request> request)
+{
+    try {
+        string assetName = request->path_match[ASSET_NAME_COMPONENT];
+        
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+        
+        string jsonResponse = "[";
+        auto it = m_assetDataBuffer.find(assetName);
+        if (it != m_assetDataBuffer.end()) {
+            const std::vector<std::string>& assetData = it->second;
+            for (size_t i = 0; i < assetData.size(); ++i) {
+                if (i > 0) jsonResponse += ",";
+                jsonResponse += assetData[i];
+            }
+        }
+        jsonResponse += "]";
+        
+        respond(response, jsonResponse);
+        
+    } catch (exception& ex) {
+        internalError(response, ex);
+    }
+}
+
+void CoreManagementApi::handleAllAssetsDataGet(std::shared_ptr<HttpServer::Response> response,
+                                              std::shared_ptr<HttpServer::Request> request)
+{
+    try {
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+        
+        string jsonResponse = "{";
+        bool firstAsset = true;
+        for (const auto& pair : m_assetDataBuffer) {
+            if (!firstAsset) jsonResponse += ",";
+            jsonResponse += "\"" + pair.first + "\":[";
+            
+            const std::vector<std::string>& assetData = pair.second;
+            for (size_t i = 0; i < assetData.size(); ++i) {
+                if (i > 0) jsonResponse += ",";
+                jsonResponse += assetData[i];
+            }
+            jsonResponse += "]";
+            firstAsset = false;
+        }
+        jsonResponse += "}";
+        
+        respond(response, jsonResponse);
+        
+    } catch (exception& ex) {
+        internalError(response, ex);
+    }
 }
 /**
  * Received a GET /fledge/service/category/{categoryName}
