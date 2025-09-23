@@ -83,11 +83,12 @@ SERVICE_JWT_AUDIENCE = 'Fledge'
 # aiohttp client’s maximum size in a request, in bytes.
 # If a POST request exceeds this value, it raises an HTTPRequestEntityTooLarge exception.
 AIOHTTP_CLIENT_MAX_SIZE = 4*1024**3  # allowed up to 4GB
-# --- Real-time Data Storage ---
+
+# --- Real-time Data Storage (Added for South Plugin Communication) ---
 _realtime_data_buffer = {}  # Dictionary: asset_name (str) -> list of data entries (dict)
 _realtime_buffer_mutex = asyncio.Lock()  # Async lock for thread-safe access
 _MAX_BUFFER_SIZE = 50  # Keep only the last N entries per asset
-# -----------------------------
+# ---------------------------------------------------------------------
 
 def ignore_aiohttp_ssl_eror(loop):
     """Ignore aiohttp #3535 / cpython #13548 issue with SSL data after close
@@ -132,7 +133,58 @@ def ignore_aiohttp_ssl_eror(loop):
 
     loop.set_exception_handler(ignore_ssl_error)
 
+# ... (imports and existing code) ...
 
+# --- CORS Middleware (Added for South Plugin Communication) ---
+from functools import wraps # Ensure this import is present or add it near other imports
+
+def cors_middleware_factory():
+    """Factory to create a CORS middleware."""
+    @web.middleware
+    async def cors_middleware(request, handler):
+        """CORS middleware to add appropriate headers."""
+        # --- Handle preflight OPTIONS requests ---
+        if request.method == 'OPTIONS':
+            # These headers tell the browser the rules for cross-origin requests
+            headers = {
+                'Access-Control-Allow-Origin': '*', # Allow any origin (or specify your Angular URL)
+                'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, If-Match, If-None-Match', # Add headers you might use
+                'Access-Control-Max-Age': '86400',  # Cache preflight response for 24 hours (optional)
+                # 'Access-Control-Allow-Credentials': 'true', # Only if you need credentials (cookies, auth headers)
+            }
+            # Respond immediately to OPTIONS request with CORS headers
+            return web.Response(status=200, headers=headers)
+
+        # --- Process the actual request ---
+        try:
+            response = await handler(request)
+        except web.HTTPException as ex:
+            # Still add CORS headers to error responses if needed
+            # (Most aiohttp exceptions should already be handled, but this is defensive)
+            # Add headers if not already present
+            if 'Access-Control-Allow-Origin' not in ex.headers:
+                ex.headers['Access-Control-Allow-Origin'] = '*'
+            if 'Access-Control-Allow-Methods' not in ex.headers:
+                ex.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+            raise ex # Re-raise the exception
+
+        # --- Add CORS headers to successful responses ---
+        # Check if it's a request to our new endpoints or generally add them
+        # Adding to all responses is common for core APIs
+        if not response.headers.get('Access-Control-Allow-Origin'):
+            response.headers['Access-Control-Allow-Origin'] = '*'
+        if not response.headers.get('Access-Control-Allow-Methods'):
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        if not response.headers.get('Access-Control-Allow-Headers'):
+             # Ensure standard headers are allowed, especially if your Angular app sends them
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, If-Match, If-None-Match'
+
+        return response
+    return cors_middleware
+# -------------------------------------------------------------
+
+# ... (rest of the file, including the Server class) ...
 class Server:
     """ Fledge core server.
 
@@ -460,190 +512,7 @@ class Server:
 
     service_app, service_server, service_server_handler = None, None, None
     core_app, core_server, core_server_handler = None, None, None
-# --- Real-time Data Endpoint Handlers ---
-@classmethod
-async def south_data_post(cls, request):
-    """Handle POST data from South plugins to /south-data/{asset}"""
-    try:
-        # 1. Extract asset name from the URL path
-        asset_name = request.match_info.get('asset', None)
-        if not asset_name:
-            raise web.HTTPBadRequest(reason="Asset name is required in the URL path.")
 
-        # 2. Parse JSON data from the request body
-        try:
-            data = await request.json()
-        except json.JSONDecodeError:
-            raise web.HTTPBadRequest(reason="Invalid JSON data in request body.")
-
-        # 3. Prepare the data entry with a timestamp
-        data_entry = {
-            "received_at": datetime.now().isoformat(), # Add timestamp
-            "data": data  # Store the original data sent by the plugin
-        }
-
-        # 4. Store the data entry in the class buffer (thread-safe)
-        async with cls._realtime_buffer_mutex:
-            # Initialize the list for this asset if it doesn't exist
-            if asset_name not in cls._realtime_data_buffer:
-                cls._realtime_data_buffer[asset_name] = []
-
-            # Append the new data entry
-            cls._realtime_data_buffer[asset_name].append(data_entry)
-
-            # 5. Maintain buffer size limit
-            if len(cls._realtime_data_buffer[asset_name]) > cls._MAX_BUFFER_SIZE:
-                # Keep only the last _MAX_BUFFER_SIZE entries
-                cls._realtime_data_buffer[asset_name] = \
-                    cls._realtime_data_buffer[asset_name][-cls._MAX_BUFFER_SIZE:]
-
-        # 6. Prepare and send successful response
-        response_data = {
-            "status": "success",
-            "message": f"Data received for asset '{asset_name}'",
-            "asset": asset_name
-        }
-        _logger.info(f"Received data via POST for asset: {asset_name}")
-        return web.json_response(response_data)
-
-    except web.HTTPException: # Re-raise HTTP exceptions (e.g., 400 Bad Request)
-        raise
-    except Exception as ex:
-        _logger.exception("Error handling south data POST for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
-        raise web.HTTPInternalServerError(reason=f"Internal error processing  {str(ex)}")
-
-
-@classmethod
-async def get_realtime_data(cls, request):
-    """Handle GET requests to /api/realtime/{asset}"""
-    try:
-        # 1. Extract asset name from the URL path
-        asset_name = request.match_info.get('asset', None)
-        if not asset_name:
-            raise web.HTTPBadRequest(reason="Asset name is required in the URL path.")
-
-        # 2. Retrieve data for the asset (thread-safe)
-        async with cls._realtime_buffer_mutex:
-            # Get the list of data entries for the asset, or an empty list if none
-            data_entries = cls._realtime_data_buffer.get(asset_name, [])
-
-        # 3. Send the data as a JSON response
-        _logger.debug(f"Fetched real-time data for asset: {asset_name}")
-        return web.json_response(data_entries)
-
-    except web.HTTPException: # Re-raise HTTP exceptions
-        raise
-    except Exception as ex:
-        _logger.exception("Error fetching real-time data for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
-        raise web.HTTPInternalServerError(reason=f"Internal error fetching  {str(ex)}")
-
-
-@classmethod
-async def get_all_realtime_data(cls, request):
-    """Handle GET requests to /api/realtime (fetch all assets)"""
-    try:
-        # 1. Retrieve data for all assets (thread-safe)
-        async with cls._realtime_buffer_mutex:
-            # Create a copy of the buffer to avoid modification during serialization
-            response_data = cls._realtime_data_buffer.copy()
-
-        # 2. Send the data as a JSON response
-        _logger.debug("Fetched real-time data for all assets")
-        return web.json_response(response_data)
-
-    except web.HTTPException: # Re-raise HTTP exceptions
-        raise
-    except Exception as ex:
-        _logger.exception("Error fetching all real-time  %s", str(ex))
-        raise web.HTTPInternalServerError(reason=f"Internal error fetching  {str(ex)}")
-
-# --------------------------------------
-# --- CORS Middleware ---
-from functools import wraps
-
-def cors_middleware_factory():
-    """Factory to create a CORS middleware."""
-    @web.middleware
-    async def cors_middleware(request, handler):
-        """CORS middleware to add appropriate headers."""
-        # --- Handle preflight OPTIONS requests ---
-        if request.method == 'OPTIONS':
-            # These headers tell the browser the rules for cross-origin requests
-            headers = {
-                'Access-Control-Allow-Origin': '*', # Allow any origin (or specify your Angular URL)
-                'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, If-Match, If-None-Match', # Add headers you might use
-                'Access-Control-Max-Age': '86400',  # Cache preflight response for 24 hours (optional)
-                # 'Access-Control-Allow-Credentials': 'true', # Only if you need credentials (cookies, auth headers)
-            }
-            # Respond immediately to OPTIONS request with CORS headers
-            return web.Response(status=200, headers=headers)
-
-        # --- Process the actual request ---
-        try:
-            response = await handler(request)
-        except web.HTTPException as ex:
-            # Still add CORS headers to error responses if needed
-            # (Most aiohttp exceptions should already be handled, but this is defensive)
-            # Add headers if not already present
-            if 'Access-Control-Allow-Origin' not in ex.headers:
-                ex.headers['Access-Control-Allow-Origin'] = '*'
-            if 'Access-Control-Allow-Methods' not in ex.headers:
-                ex.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-            raise ex # Re-raise the exception
-
-        # --- Add CORS headers to successful responses ---
-        # Check if it's a request to our new endpoints or generally add them
-        # Adding to all responses is common for core APIs
-        if not response.headers.get('Access-Control-Allow-Origin'):
-            response.headers['Access-Control-Allow-Origin'] = '*'
-        if not response.headers.get('Access-Control-Allow-Methods'):
-            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        if not response.headers.get('Access-Control-Allow-Headers'):
-             # Ensure standard headers are allowed, especially if your Angular app sends them
-            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, If-Match, If-None-Match'
-
-        return response
-    return cors_middleware
-# ----------------------
-@classmethod
-def _make_core_app(cls):
-    """Creates the Service management REST server Core a.k.a. service registry
-    :rtype: web.Application
-    """
-    # --- Add CORS Middleware ---
-    cors_mw = cors_middleware_factory() # Create an instance of our CORS middleware
-    # --------------------------
-
-    # --- Add CORS Middleware to the app ---
-    # Wrap the existing error_middleware with our CORS middleware
-    # Middlewares are applied in reverse order of the list, so CORS should be outermost for responses,
-    # but aiohttp middleware wrapping can be tricky. Let's add CORS to the list.
-    # The safest way is often to create the app with CORS middleware included.
-    app = web.Application(
-        middlewares=[cors_mw, middleware.error_middleware], # Add cors_mw here
-        client_max_size=AIOHTTP_CLIENT_MAX_SIZE
-    )
-    # ------------------------------------
-
-    # aiohttp web server logging level always set to warning
-    web.access_logger.setLevel(logging.WARNING)
-
-    # --- Register the standard management routes ---
-    management_routes.setup(app, cls, True) # This sets up existing routes like /fledge/service
-    # ---------------------------------------------
-
-    # --- Register the NEW Real-time Data Routes ---
-    # Add POST route for South plugin data
-    app.router.add_post('/south-data/{asset}', cls.south_data_post)
-    # Add GET route for specific asset data
-    app.router.add_get('/api/realtime/{asset}', cls.get_realtime_data)
-    # Add GET route for all asset data
-    app.router.add_get('/api/realtime', cls.get_all_realtime_data)
-    # ---------------------------------------------
-
-    _logger.info("Real-time data routes added to core management API.")
-    return app
     @classmethod
     def get_certificates(cls):
         # TODO: FOGL-780
@@ -993,18 +862,49 @@ def _make_core_app(cls):
         admin_routes.setup(app)
         return app
 
-    @classmethod
-    def _make_core_app(cls):
-        """Creates the Service management REST server Core a.k.a. service registry
+  # ... (inside the Server class, around the _make_core_app method) ...
 
-        :rtype: web.Application
-        """
-        app = web.Application(middlewares=[middleware.error_middleware], client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
-        # aiohttp web server logging level always set to warning
-        web.access_logger.setLevel(logging.WARNING)
-        management_routes.setup(app, cls, True)
-        return app
+@classmethod
+def _make_core_app(cls):
+    """Creates the Service management REST server Core a.k.a. service registry
+    :rtype: web.Application
+    """
+    # --- Add CORS Middleware (Added for South Plugin Communication) ---
+    cors_mw = cors_middleware_factory() # Create an instance of our CORS middleware
+    # -------------------------------------------------------------------
 
+    # --- Apply CORS Middleware and existing middleware ---
+    # Include cors_mw in the middlewares list.
+    # The order matters: cors_mw is typically outermost for responses.
+    # error_middleware is usually innermost.
+    # aiohttp applies middlewares in reverse order of the list for the *request* path,
+    # and normal order for the *response* path.
+    app = web.Application(
+        middlewares=[cors_mw, middleware.error_middleware], # Add cors_mw here
+        client_max_size=AIOHTTP_CLIENT_MAX_SIZE
+    )
+    # -------------------------------------------------------
+
+    # aiohttp web server logging level always set to warning
+    web.access_logger.setLevel(logging.WARNING)
+
+    # --- Register the standard management routes ---
+    management_routes.setup(app, cls, True) # This sets up existing routes like /fledge/service
+    # ---------------------------------------------
+
+    # --- Register the NEW Real-time Data Routes (Added for South Plugin Communication) ---
+    # Add POST route for South plugin data
+    app.router.add_post('/south-data/{asset}', cls.south_data_post)
+    # Add GET route for specific asset data
+    app.router.add_get('/api/realtime/{asset}', cls.get_realtime_data)
+    # Add GET route for all asset data
+    app.router.add_get('/api/realtime', cls.get_all_realtime_data)
+    _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to core management API.")
+    # ------------------------------------------------------------------------------------
+
+    return app
+
+# ... (rest of the class methods) ...
     @classmethod
     async def _start_service_monitor(cls):
         """Starts the micro-service monitor"""
@@ -1547,7 +1447,107 @@ def _make_core_app(cls):
                     _logger.info("Shutdown scheduled for %s service %s. %s", svc._type, svc._name, response['message'])
                 except KeyError:
                     raise
+# ... (other methods in the Server class) ...
 
+# --- Real-time Data Endpoint Handlers (Added for South Plugin Communication) ---
+@classmethod
+async def south_data_post(cls, request):
+    """Handle POST data from South plugins to /south-data/{asset}"""
+    try:
+        # 1. Extract asset name from the URL path
+        asset_name = request.match_info.get('asset', None)
+        if not asset_name:
+            raise web.HTTPBadRequest(reason="Asset name is required in the URL path.")
+
+        # 2. Parse JSON data from the request body
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            raise web.HTTPBadRequest(reason="Invalid JSON data in request body.")
+
+        # 3. Prepare the data entry with a timestamp
+        data_entry = {
+            "received_at": datetime.now().isoformat(), # Add timestamp
+            "data": data  # Store the original data sent by the plugin
+        }
+
+        # 4. Store the data entry in the class buffer (thread-safe)
+        async with cls._realtime_buffer_mutex:
+            # Initialize the list for this asset if it doesn't exist
+            if asset_name not in cls._realtime_data_buffer:
+                cls._realtime_data_buffer[asset_name] = []
+
+            # Append the new data entry
+            cls._realtime_data_buffer[asset_name].append(data_entry)
+
+            # 5. Maintain buffer size limit
+            if len(cls._realtime_data_buffer[asset_name]) > cls._MAX_BUFFER_SIZE:
+                # Keep only the last _MAX_BUFFER_SIZE entries
+                cls._realtime_data_buffer[asset_name] = \
+                    cls._realtime_data_buffer[asset_name][-cls._MAX_BUFFER_SIZE:]
+
+        # 6. Prepare and send successful response
+        response_data = {
+            "status": "success",
+            "message": f"Data received for asset '{asset_name}'",
+            "asset": asset_name
+        }
+        _logger.info(f"Received data via POST for asset: {asset_name}")
+        return web.json_response(response_data)
+
+    except web.HTTPException: # Re-raise HTTP exceptions (e.g., 400 Bad Request)
+        raise
+    except Exception as ex:
+        _logger.exception("Error handling south data POST for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
+        raise web.HTTPInternalServerError(reason=f"Internal error processing  {str(ex)}")
+
+
+@classmethod
+async def get_realtime_data(cls, request):
+    """Handle GET requests to /api/realtime/{asset}"""
+    try:
+        # 1. Extract asset name from the URL path
+        asset_name = request.match_info.get('asset', None)
+        if not asset_name:
+            raise web.HTTPBadRequest(reason="Asset name is required in the URL path.")
+
+        # 2. Retrieve data for the asset (thread-safe)
+        async with cls._realtime_buffer_mutex:
+            # Get the list of data entries for the asset, or an empty list if none
+            data_entries = cls._realtime_data_buffer.get(asset_name, [])
+
+        # 3. Send the data as a JSON response
+        _logger.debug(f"Fetched real-time data for asset: {asset_name}")
+        return web.json_response(data_entries)
+
+    except web.HTTPException: # Re-raise HTTP exceptions
+        raise
+    except Exception as ex:
+        _logger.exception("Error fetching real-time data for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
+        raise web.HTTPInternalServerError(reason=f"Internal error fetching  {str(ex)}")
+
+
+@classmethod
+async def get_all_realtime_data(cls, request):
+    """Handle GET requests to /api/realtime (fetch all assets)"""
+    try:
+        # 1. Retrieve data for all assets (thread-safe)
+        async with cls._realtime_buffer_mutex:
+            # Create a copy of the buffer to avoid modification during serialization
+            response_data = cls._realtime_data_buffer.copy()
+
+        # 2. Send the data as a JSON response
+        _logger.debug("Fetched real-time data for all assets")
+        return web.json_response(response_data)
+
+    except web.HTTPException: # Re-raise HTTP exceptions
+        raise
+    except Exception as ex:
+        _logger.exception("Error fetching all real-time  %s", str(ex))
+        raise web.HTTPInternalServerError(reason=f"Internal error fetching  {str(ex)}")
+# --------------------------------------------------------------------------------
+
+# ... (rest of the class definition, like _make_app, _make_core_app, start, etc.) ...
     @classmethod
     async def poll_microservices_unregister(cls):
         """ poll microservice shutdown endpoint for non core micro-services"""
