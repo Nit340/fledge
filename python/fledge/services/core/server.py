@@ -814,14 +814,13 @@ class Server:
         """
         cors_mw = realtime_data_handler.cors_middleware_factory()
         app = web.Application(middlewares=[cors_mw, middleware.error_middleware],client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
-
+        management_routes.setup(app, cls, True)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
         app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
         app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
         app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
-    _   logger.info("Real-time data routes (/south-data/, /api/realtime/) added to core management API.")
-        management_routes.setup(app, cls, True)
+        _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to core management API.")
         return app
 
     @classmethod
