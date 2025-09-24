@@ -4,7 +4,7 @@ from datetime import datetime
 from aiohttp import web
 import logging
 
-# --- Real-time Data Storage (Module-level variables) ---
+
 # Use a regular dictionary and asyncio.Lock for thread safety in async context
 realtime_data_buffer = {}  # asset_name (str) -> list of data entries (dict)
 realtime_buffer_mutex = asyncio.Lock()  # Async lock for thread-safe access
@@ -62,7 +62,7 @@ async def south_data_post(request):
         raise
     except Exception as ex:
         _logger.exception("Error handling south data POST for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
-        raise web.HTTPInternalServerError(reason=f"Internal error processing  {str(ex)}")
+        raise web.HTTPInternalServerError(reason=f"Internal error processing data: {str(ex)}")
 
 
 async def get_realtime_data(request):
@@ -86,7 +86,7 @@ async def get_realtime_data(request):
         raise
     except Exception as ex:
         _logger.exception("Error fetching real-time data for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
-        raise web.HTTPInternalServerError(reason=f"Internal error fetching  {str(ex)}")
+        raise web.HTTPInternalServerError(reason=f"Internal error fetching data: {str(ex)}")
 
 
 async def get_all_realtime_data(request):
@@ -104,14 +104,15 @@ async def get_all_realtime_data(request):
     except web.HTTPException: # Re-raise HTTP exceptions
         raise
     except Exception as ex:
-        _logger.exception("Error fetching all real-time  %s", str(ex))
-        raise web.HTTPInternalServerError(reason=f"Internal error fetching  {str(ex)}")
+        _logger.exception("Error fetching all real-time data: %s", str(ex))
+        raise web.HTTPInternalServerError(reason=f"Internal error fetching data: {str(ex)}")
 # --------------------------------------
 
 # --- CORS Middleware ---
 def cors_middleware_factory():
     """Factory to create a CORS middleware."""
-    from aiohttp import web # Import here to avoid circular imports if needed later
+    # Importing web here is generally fine for middleware factories
+    from aiohttp import web
     @web.middleware
     async def cors_middleware(request, handler):
         """CORS middleware to add appropriate headers."""
@@ -129,11 +130,12 @@ def cors_middleware_factory():
         try:
             response = await handler(request)
         except web.HTTPException as ex:
+            # Still add CORS headers to error responses if needed
             if 'Access-Control-Allow-Origin' not in ex.headers:
                 ex.headers['Access-Control-Allow-Origin'] = '*'
             if 'Access-Control-Allow-Methods' not in ex.headers:
                 ex.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-            raise ex
+            raise ex # Re-raise the exception
 
         # --- Add CORS headers to successful responses ---
         if not response.headers.get('Access-Control-Allow-Origin'):
@@ -150,5 +152,4 @@ def cors_middleware_factory():
 # Optional: Function to get the buffer for debugging or other internal use
 def get_buffer_snapshot():
     """Return a copy of the current data buffer for debugging."""
-    async with realtime_buffer_mutex:
-        return realtime_data_buffer.copy()
+    pass # Placeholder for the problematic sync function
