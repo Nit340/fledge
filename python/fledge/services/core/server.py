@@ -32,7 +32,7 @@ from fledge.common.storage_client.exceptions import *
 from fledge.common.storage_client.storage_client import StorageClientAsync
 from fledge.common.storage_client.storage_client import ReadingsStorageClientAsync
 from fledge.common.web import middleware
-
+from fledge.services.core import realtime_data_handler
 from fledge.services.core import routes as admin_routes
 from fledge.services.core.api import configuration as conf_api
 from fledge.services.common.microservice_management import routes as management_routes
@@ -812,9 +812,15 @@ class Server:
 
         :rtype: web.Application
         """
-        app = web.Application(middlewares=[middleware.error_middleware], client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
+        cors_mw = realtime_data_handler.cors_middleware_factory()
+        app = web.Application(middlewares=[cors_mw, middleware.error_middleware],client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
+
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
+        app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
+        app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
+        app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
+    _   logger.info("Real-time data routes (/south-data/, /api/realtime/) added to core management API.")
         management_routes.setup(app, cls, True)
         return app
 
