@@ -786,7 +786,7 @@ class Server:
 
         :rtype: web.Application
         """
-         mwares = [middleware.error_middleware]
+        mwares = [middleware.error_middleware]
 
         # --- Add CORS Middleware (Global for Main API) ---
         # Get the CORS middleware factory function from the imported module and instantiate it
@@ -831,7 +831,7 @@ class Server:
         :rtype: web.Application
         """
         # --- Add CORS Middleware (from imported module, for internal comms if needed) ---
-         cors_mw = realtime_data_handler.cors_middleware_factory()
+        cors_mw = realtime_data_handler.cors_middleware_factory()
         # --------------------------------------------------
 
         # --- Apply CORS Middleware and existing middleware ---
