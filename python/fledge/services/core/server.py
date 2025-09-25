@@ -780,18 +780,21 @@ class Server:
             _logger.exception(ex)
             raise
 
+    # Inside server.py - Modified _make_app method
     @staticmethod
     def _make_app(auth_required=True, auth_method='any'):
-        """Creates the REST server
+        """Creates the REST server (Main API on port 8081)
 
         :rtype: web.Application
         """
+        # --- Prepare Middlewares ---
+        # Start with the error middleware
         mwares = [middleware.error_middleware]
 
-        # --- Add CORS Middleware (Global for Main API) ---
-        # Get the CORS middleware factory function from the imported module and instantiate it
-        cors_mw = realtime_data_handler.cors_middleware_factory()
-        mwares.insert(0, cors_mw) # Insert CORS middleware at the beginning for outermost response handling
+        # --- DO NOT add your custom CORS middleware here ---
+        # Removing these lines to prevent conflict with aiohttp_cors
+        # cors_mw = realtime_data_handler.cors_middleware_factory()
+        # mwares.insert(0, cors_mw) # <-- Remove this line
         # ----------------------------
 
         # Maintain this order for auth middlewares (they are executed in reverse).
@@ -802,10 +805,13 @@ class Server:
                 mwares.append(middleware.password_login_middleware)
 
         if not auth_required:
+            # This middleware might be relevant for making endpoints public
             mwares.append(middleware.optional_auth_middleware)
         else:
             mwares.append(middleware.auth_middleware)
         # --------------------------
+
+        # Create the app with the (cleaned) middleware list
         app = web.Application(middlewares=mwares, client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
@@ -822,6 +828,7 @@ class Server:
         app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
         _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to MAIN REST API (port 8081).")
         # --------------------------------------------------------------------
+
         return app
 
     @classmethod
