@@ -786,9 +786,15 @@ class Server:
 
         :rtype: web.Application
         """
-        mwares = [middleware.error_middleware]
+         mwares = [middleware.error_middleware]
 
-        # Maintain this order. Middlewares are executed in reverse order.
+        # --- Add CORS Middleware (Global for Main API) ---
+        # Get the CORS middleware factory function from the imported module and instantiate it
+        cors_mw = realtime_data_handler.cors_middleware_factory()
+        mwares.insert(0, cors_mw) # Insert CORS middleware at the beginning for outermost response handling
+        # ----------------------------
+
+        # Maintain this order for auth middlewares (they are executed in reverse).
         if auth_method != "any":
             if auth_method == "certificate":
                 mwares.append(middleware.certificate_login_middleware)
@@ -799,11 +805,23 @@ class Server:
             mwares.append(middleware.optional_auth_middleware)
         else:
             mwares.append(middleware.auth_middleware)
-
+        # --------------------------
         app = web.Application(middlewares=mwares, client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
-        admin_routes.setup(app)
+
+        # --- Setup Standard Main API Routes ---
+        admin_routes.setup(app) # This sets up existing routes like /fledge/asset, /fledge/service (user view), etc.
+        # ------------------------------------
+
+        # --- Register the NEW Real-time Data Routes (on MAIN API port 8081) ---
+        # IMPORTANT: These lines ADD your new routes to the MAIN API app's router.
+        # They MUST be present.
+        app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
+        app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
+        app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
+        _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to MAIN REST API (port 8081).")
+        # --------------------------------------------------------------------
         return app
 
     @classmethod
@@ -812,15 +830,25 @@ class Server:
 
         :rtype: web.Application
         """
-        cors_mw = realtime_data_handler.cors_middleware_factory()
-        app = web.Application(middlewares=[cors_mw, middleware.error_middleware],client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
-        management_routes.setup(app, cls, True)
+        # --- Add CORS Middleware (from imported module, for internal comms if needed) ---
+         cors_mw = realtime_data_handler.cors_middleware_factory()
+        # --------------------------------------------------
+
+        # --- Apply CORS Middleware and existing middleware ---
+        app = web.Application(middlewares=[cors_mw, middleware.error_middleware],)
+        # -------------------------------------------------------
+
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
-        app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
-        app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
-        app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
-        _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to core management API.")
+
+        # --- Register the standard management routes ---
+        management_routes.setup(app, cls, True) # This sets up existing internal routes like /fledge/service (for mgmt)
+        # ---------------------------------------------
+       
+        #app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
+        #app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
+        #app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
+        #_logger.info("Real-time data routes (/south-data/, /api/realtime/) added to core management API.")
         return app
 
     @classmethod
