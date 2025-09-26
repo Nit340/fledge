@@ -14,59 +14,41 @@ MAX_BUFFER_SIZE = 50  # Keep only the last N entries per asset
 _logger = logging.getLogger(__name__)
 
 # --- Real-time Data Endpoint Handlers ---
+# Inside realtime_data_handler.py - TEMPORARY DEBUGGING VERSION
 async def south_data_post(request):
-    """Handle POST data from South plugins to /south-data/{asset}"""
+    """Handle POST data from South plugins to /south-data/{asset} - DEBUG VERSION"""
+    # --- Mark request as Core Management related ---
+    request.is_core_mgt = True
+    # -------------------------------------------------
     try:
-        # 1. Extract asset name from the URL path
         asset_name = request.match_info.get('asset', None)
         if not asset_name:
-            raise web.HTTPBadRequest(reason="Asset name is required in the URL path.")
+            raise web.HTTPBadRequest(reason="Asset name is required.")
 
-        # 2. Parse JSON data from the request body
-        try:
-            data = await request.json()
-        except json.JSONDecodeError:
-            raise web.HTTPBadRequest(reason="Invalid JSON data in request body.")
-
-        # 3. Prepare the data entry with a timestamp
-        data_entry = {
-            "received_at": datetime.now().isoformat(), # Add timestamp
-            "data": data  # Store the original data sent by the plugin
-        }
-
-        # 4. Store the data entry in the buffer (thread-safe)
-        async with realtime_buffer_mutex:
-            # Initialize the list for this asset if it doesn't exist
-            if asset_name not in realtime_data_buffer:
-                realtime_data_buffer[asset_name] = []
-
-            # Append the new data entry
-            realtime_data_buffer[asset_name].append(data_entry)
-
-            # 5. Maintain buffer size limit
-            if len(realtime_data_buffer[asset_name]) > MAX_BUFFER_SIZE:
-                # Keep only the last MAX_BUFFER_SIZE entries
-                realtime_data_buffer[asset_name] = \
-                    realtime_data_buffer[asset_name][-MAX_BUFFER_SIZE:]
-
-        # 6. Prepare and send successful response
+        # --- SIMPLIFIED LOGIC - NO LOCK, NO BUFFER ---
+        # Just log the request and return success
+        _logger.info(f"DEBUG: Received POST for asset '{asset_name}'. Returning success immediately.")
         response_data = {
-            "status": "success",
-            "message": f"Data received for asset '{asset_name}'",
+            "status": "debug_success",
+            "message": f"Debug: Data received for asset '{asset_name}' (no storage)",
             "asset": asset_name
         }
-        _logger.info(f"Received data via POST for asset: {asset_name}")
         return web.json_response(response_data)
+        # ---------------------------------------------
 
-    except web.HTTPException: # Re-raise HTTP exceptions (e.g., 400 Bad Request)
+    except web.HTTPException:
         raise
     except Exception as ex:
-        _logger.exception("Error handling south data POST for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
-        raise web.HTTPInternalServerError(reason=f"Internal error processing data: {str(ex)}")
-
+        _logger.exception("DEBUG: Error in simplified south_data_post: %s", str(ex))
+        raise web.HTTPInternalServerError(reason=f"Debug error: {str(ex)}")
 
 async def get_realtime_data(request):
     """Handle GET requests to /api/realtime/{asset}"""
+    # --- Mark request as Core Management related to bypass standard auth on main API ---
+    # Setting this attribute makes this endpoint publicly accessible on the main API port.
+    request.is_core_mgt = True
+    # -------------------------------------------------------------------------
+
     try:
         # 1. Extract asset name from the URL path
         asset_name = request.match_info.get('asset', None)
@@ -91,6 +73,11 @@ async def get_realtime_data(request):
 
 async def get_all_realtime_data(request):
     """Handle GET requests to /api/realtime (fetch all assets)"""
+    # --- Mark request as Core Management related to bypass standard auth on main API ---
+    # Setting this attribute makes this endpoint publicly accessible on the main API port.
+    request.is_core_mgt = True
+    # -------------------------------------------------------------------------
+
     try:
         # 1. Retrieve data for all assets (thread-safe)
         async with realtime_buffer_mutex:
@@ -150,6 +137,13 @@ def cors_middleware_factory():
 # ----------------------
 
 # Optional: Function to get the buffer for debugging or other internal use
+# Note: This synchronous function accessing an async lock is problematic.
+# A correct implementation would need an async context:
+# async def get_buffer_snapshot_async():
+#     async with realtime_buffer_mutex:
+#         return realtime_data_buffer.copy()
 def get_buffer_snapshot():
     """Return a copy of the current data buffer for debugging."""
-    pass # Placeholder for the problematic sync function
+    # Placeholder for the problematic sync function
+    # As-is, this won't work correctly due to the async lock.
+    pass
