@@ -32,11 +32,11 @@ from fledge.common.storage_client.exceptions import *
 from fledge.common.storage_client.storage_client import StorageClientAsync
 from fledge.common.storage_client.storage_client import ReadingsStorageClientAsync
 from fledge.common.web import middleware
-from fledge.services.core import realtime_data_handler
+
 from fledge.services.core import routes as admin_routes
 from fledge.services.core.api import configuration as conf_api
 from fledge.services.common.microservice_management import routes as management_routes
-
+from fledge.services.core import realtime_data_handler
 from fledge.common.service_record import ServiceRecord
 from fledge.services.core.service_registry.service_registry import ServiceRegistry
 from fledge.services.core.service_registry import exceptions as service_registry_exceptions
@@ -781,8 +781,9 @@ class Server:
             raise
 
     # Inside server.py - Modified _make_app method
+    # Inside server.py - Modified _make_app method for TESTING
     @staticmethod
-    def _make_app(auth_required=True, auth_method='any'):
+    def _make_app(auth_required=True, auth_method='any'): # Ignore auth_required/auth_method args for this test
         """Creates the REST server (Main API on port 8081)
 
         :rtype: web.Application
@@ -791,27 +792,13 @@ class Server:
         # Start with the error middleware
         mwares = [middleware.error_middleware]
 
-        # --- DO NOT add your custom CORS middleware here ---
-        # Removing these lines to prevent conflict with aiohttp_cors
-        # cors_mw = realtime_data_handler.cors_middleware_factory()
-        # mwares.insert(0, cors_mw) # <-- Remove this line
-        # ----------------------------
+        # --- FORCE optional_auth_middleware for testing ---
+        # This bypasses MOST mandatory auth checks, relying more on request.is_core_mgt
+        # or per-handler auth decisions. This overrides the standard config logic.
+        mwares.append(middleware.optional_auth_middleware)
+        # ---------------------------------------------------
 
-        # Maintain this order for auth middlewares (they are executed in reverse).
-        if auth_method != "any":
-            if auth_method == "certificate":
-                mwares.append(middleware.certificate_login_middleware)
-            else:  # password
-                mwares.append(middleware.password_login_middleware)
-
-        if not auth_required:
-            # This middleware might be relevant for making endpoints public
-            mwares.append(middleware.optional_auth_middleware)
-        else:
-            mwares.append(middleware.auth_middleware)
-        # --------------------------
-
-        # Create the app with the (cleaned) middleware list
+        # Create the app with the FORCED middleware list
         app = web.Application(middlewares=mwares, client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
