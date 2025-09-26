@@ -281,11 +281,8 @@ def setup(app):
     # Pipeline Debuger
     pipeline_debugger.setup(app)
     app.router.add_route('POST', '/south-data/{asset}', realtime_data_handler.south_data_post)
-    # GET /api/realtime/{asset} - Get real-time data for a specific asset
     app.router.add_route('GET', '/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
-    # GET /api/realtime - Get real-time data for all assets
     app.router.add_route('GET', '/api/realtime', realtime_data_handler.get_all_realtime_data)
-    
     # -------------------------------------------
     # enable cors support
     enable_cors(app)
