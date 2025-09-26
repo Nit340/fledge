@@ -21,7 +21,7 @@ from fledge.services.core.api.plugins import config_validator
 from fledge.services.core.api.repos import configure as configure_repo
 from fledge.services.core.api.snapshot import plugins as snapshot_plugins
 from fledge.services.core.api.snapshot import table as snapshot_table
-
+from fledge.services.core import realtime_data_handler
 
 __author__ = "Ashish Jabble, Praveen Garg, Massimiliano Pinto, Amarendra K Sinha"
 __copyright__ = "Copyright (c) 2017-2018 OSIsoft, LLC"
@@ -280,7 +280,13 @@ def setup(app):
 
     # Pipeline Debuger
     pipeline_debugger.setup(app)
-
+    app.router.add_route('POST', '/south-data/{asset}', realtime_data_handler.south_data_post)
+    # GET /api/realtime/{asset} - Get real-time data for a specific asset
+    app.router.add_route('GET', '/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
+    # GET /api/realtime - Get real-time data for all assets
+    app.router.add_route('GET', '/api/realtime', realtime_data_handler.get_all_realtime_data)
+    
+    # -------------------------------------------
     # enable cors support
     enable_cors(app)
 

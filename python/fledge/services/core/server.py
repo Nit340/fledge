@@ -782,42 +782,44 @@ class Server:
 
     # Inside server.py - Modified _make_app method
     # Inside server.py - Modified _make_app method for TESTING
+    # Inside server.py - Modified _make_app method
     @staticmethod
-    def _make_app(auth_required=True, auth_method='any'): # Ignore auth_required/auth_method args for this test
+    def _make_app(auth_required=True, auth_method='any'):
         """Creates the REST server (Main API on port 8081)
 
-        :rtype: web.Application
-        """
+    :rtype: web.Application
+    """
         # --- Prepare Middlewares ---
         # Start with the error middleware
         mwares = [middleware.error_middleware]
 
-        # --- FORCE optional_auth_middleware for testing ---
-        # This bypasses MOST mandatory auth checks, relying more on request.is_core_mgt
-        # or per-handler auth decisions. This overrides the standard config logic.
-        mwares.append(middleware.optional_auth_middleware)
-        # ---------------------------------------------------
 
-        # Create the app with the FORCED middleware list
+        # Maintain this order for auth middlewares (they are executed in reverse).
+        if auth_method != "any":
+            if auth_method == "certificate":
+                mwares.append(middleware.certificate_login_middleware)
+            else:  # password
+                mwares.append(middleware.password_login_middleware)
+
+        if not auth_required:
+            # This middleware might be relevant for making endpoints public
+            mwares.append(middleware.optional_auth_middleware)
+        else:
+            mwares.append(middleware.auth_middleware)
+         # --------------------------
+
+        # Create the app with the (cleaned) middleware list
         app = web.Application(middlewares=mwares, client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
 
         # --- Setup Standard Main API Routes ---
-        admin_routes.setup(app) # This sets up existing routes like /fledge/asset, /fledge/service (user view), etc.
+        admin_routes.setup(app) # This sets up existing routes AND your NEW routes from admin_routes.py
         # ------------------------------------
 
-        # --- Register the NEW Real-time Data Routes (on MAIN API port 8081) ---
-        # IMPORTANT: These lines ADD your new routes to the MAIN API app's router.
-        # They MUST be present.
-        app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
-        app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
-        app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
-        _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to MAIN REST API (port 8081).")
-        # --------------------------------------------------------------------
+
 
         return app
-
     @classmethod
     def _make_core_app(cls):
         """Creates the Service management REST server Core a.k.a. service registry
