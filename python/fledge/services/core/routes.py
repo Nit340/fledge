@@ -33,7 +33,9 @@ def setup(app):
     app.router.add_route('GET', '/fledge/ping', api_common.ping)
     app.router.add_route('PUT', '/fledge/shutdown', api_common.shutdown)
     app.router.add_route('PUT', '/fledge/restart', api_common.restart)
-
+    app.router.add_route('POST', '/south-data/{asset}', realtime_data_handler.south_data_post)
+    app.router.add_route('GET', '/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
+    app.router.add_route('GET', '/api/realtime', realtime_data_handler.get_all_realtime_data)
     # user
     app.router.add_route('GET', '/fledge/user', auth.get_user)
     app.router.add_route('PUT', '/fledge/user', auth.update_me)
@@ -280,9 +282,7 @@ def setup(app):
 
     # Pipeline Debuger
     pipeline_debugger.setup(app)
-    app.router.add_route('POST', '/south-data/{asset}', realtime_data_handler.south_data_post)
-    app.router.add_route('GET', '/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
-    app.router.add_route('GET', '/api/realtime', realtime_data_handler.get_all_realtime_data)
+    
     # -------------------------------------------
     # enable cors support
     enable_cors(app)

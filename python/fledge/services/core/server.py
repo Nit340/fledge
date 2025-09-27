@@ -780,21 +780,58 @@ class Server:
             _logger.exception(ex)
             raise
 
-    # Inside server.py - Modified _make_app method
-    # Inside server.py - Modified _make_app method for TESTING
-    # Inside server.py - Modified _make_app method
+    # Inside _make_app in server.py
     @staticmethod
     def _make_app(auth_required=True, auth_method='any'):
-        """Creates the REST server (Main API on port 8081)
+        """Creates the REST server (Main API on port 8081)"""
 
-    :rtype: web.Application
-    """
+        # Define the public endpoint middleware
+        @web.middleware
+        async def public_endpoint_middleware(request, handler):
+            """Middleware to bypass auth for public endpoints"""
+            # Check if this is a public endpoint (WITHOUT importing inside the function)
+            # Use the is_public_endpoint function directly if it's accessible
+            # Or inline the check:
+            path = request.path
+            if path.startswith('/south-data/') or path.startswith('/api/realtime') or path.startswith('/public/'):
+                # Skip authentication for public endpoints
+                # IMPORTANT: Still call await handler(request) to go through the normal pipeline
+                # for the matched route, including any other middlewares that come after this one.
+                response = await handler(request)
+                return response
+        
+            # For non-public endpoints, continue with normal auth flow
+            # (This part depends on your existing Fledge auth setup)
+            # You might need to adjust this to match exactly how Fledge does it.
+            # The logic below is a simplified placeholder.
+            if auth_method != "any":
+                if auth_method == "certificate":
+                    from fledge.common.web import middleware as auth_middleware
+                    return await auth_middleware.certificate_login_middleware(request, handler)
+                else:  # password
+                    from fledge.common.web import middleware as auth_middleware
+                    return await auth_middleware.password_login_middleware(request, handler)
+
+            if not auth_required:
+                from fledge.common.web import middleware as auth_middleware
+                return await auth_middleware.optional_auth_middleware(request, handler)
+            else:
+                from fledge.common.web import middleware as auth_middleware
+                return await auth_middleware.auth_middleware(request, handler)
+
         # --- Prepare Middlewares ---
         # Start with the error middleware
         mwares = [middleware.error_middleware]
-
-
+    
+        # Add the public endpoint middleware AFTER error_middleware
+        # This means error_middleware will still catch errors from public_endpoint_middleware
+        # and handlers it calls.
+        mwares.append(public_endpoint_middleware) 
+    
         # Maintain this order for auth middlewares (they are executed in reverse).
+        # IMPORTANT: Because public_endpoint_middleware comes BEFORE these,
+        # these standard auth middlewares will NOT be called for public endpoints.
+        # This is the desired behavior.
         if auth_method != "any":
             if auth_method == "certificate":
                 mwares.append(middleware.certificate_login_middleware)
@@ -806,18 +843,16 @@ class Server:
             mwares.append(middleware.optional_auth_middleware)
         else:
             mwares.append(middleware.auth_middleware)
-         # --------------------------
+        # --------------------------
 
-        # Create the app with the (cleaned) middleware list
+        # Create the app with the (updated) middleware list
         app = web.Application(middlewares=mwares, client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
 
         # --- Setup Standard Main API Routes ---
-        admin_routes.setup(app) # This sets up existing routes AND your NEW routes from admin_routes.py
+        admin_routes.setup(app) # This sets up existing routes like /fledge/asset, /fledge/service (user view), etc.
         # ------------------------------------
-
-
 
         return app
     @classmethod
