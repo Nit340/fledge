@@ -820,17 +820,35 @@ class Server:
             _logger.exception(ex)
             raise
 
+    # Inside server.py - Modified _make_app method
     @staticmethod
     def _make_app(auth_required=True, auth_method='any'):
-        """Creates the REST server (Main API on port 8081)"""
-    
+        """Creates the REST server (Main API on port 8081)
+
+        :rtype: web.Application
+        """
         # --- Prepare Middlewares ---
         # Start with the error middleware
         mwares = [middleware.error_middleware]
-    
-        # Add simple CORS middleware
-        cors_mw = realtime_data_handler.simple_cors_middleware_factory()
-        mwares.insert(0, cors_mw) # Add CORS middleware
+
+        # --- DO NOT add your custom CORS middleware here ---
+        # Removing these lines to prevent conflict with aiohttp_cors or other middleware issues
+        # cors_mw = realtime_data_handler.cors_middleware_factory() # <-- Remove this line
+        # mwares.insert(0, cors_mw) # <-- Remove this line
+        # ----------------------------
+
+        # Maintain this order for auth middlewares (they are executed in reverse).
+        if auth_method != "any":
+            if auth_method == "certificate":
+                mwares.append(middleware.certificate_login_middleware)
+            else:  # password
+                mwares.append(middleware.password_login_middleware)
+
+        if not auth_required:
+            # This middleware might be relevant for making endpoints public
+            mwares.append(middleware.optional_auth_middleware)
+        else:
+            mwares.append(middleware.auth_middleware)
         # --------------------------
 
         # Create the app with the (cleaned) middleware list
@@ -842,39 +860,52 @@ class Server:
         admin_routes.setup(app) # This sets up existing routes like /fledge/asset, /fledge/service (user view), etc.
         # ------------------------------------
 
-        # --- Register the NEW Public Real-time Data Routes ---
+        # --- Register the NEW Real-time Data Routes (on MAIN API port 8081) ---
+        # IMPORTANT: These lines ADD your new routes to the MAIN API app's router.
+        # They MUST be present for your endpoints to be accessible on port 8081.
         app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
         app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
         app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
-        _logger.info("Public real-time data routes (/south-data/, /api/realtime/) added to MAIN REST API (port 8081).")
+        _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to MAIN REST API (port 8081).")
         # --------------------------------------------------------------------
 
         return app
+        # Inside server.py - Modified _make_core_app method
     @classmethod
     def _make_core_app(cls):
         """Creates the Service management REST server Core a.k.a. service registry
 
         :rtype: web.Application
         """
-        # --- Add CORS Middleware (from imported module, for internal comms if needed) ---
-        cors_mw = realtime_data_handler.cors_middleware_factory()
-        # --------------------------------------------------
+        # --- Prepare Middlewares ---
+        # Start with the error middleware
+        mwares = [middleware.error_middleware]
 
-        # --- Apply CORS Middleware and existing middleware ---
-        app = web.Application(middlewares=[cors_mw, middleware.error_middleware],)
-        # -------------------------------------------------------
+        # --- DO NOT add your custom CORS middleware here either ---
+        # Removing these lines to prevent conflict with aiohttp_cors or other middleware issues
+        # cors_mw = realtime_data_handler.cors_middleware_factory() # <-- Remove this line
+        # mwares.insert(0, cors_mw) # <-- Remove this line
+        # ----------------------------
 
+        # Create the app with the (cleaned) middleware list
+        app = web.Application(middlewares=mwares, client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
 
-        # --- Register the standard management routes ---
+        # --- Setup Standard Management Routes ---
         management_routes.setup(app, cls, True) # This sets up existing internal routes like /fledge/service (for mgmt)
-        # ---------------------------------------------
-       
-        #app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
-        #app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
-        #app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
-        #_logger.info("Real-time data routes (/south-data/, /api/realtime/) added to core management API.")
+        # -------------------------------------
+
+        # --- Register the NEW Real-time Data Routes (on CORE MANAGEMENT API port - OPTIONAL) ---
+        # IMPORTANT: These lines ADD your new routes to the CORE MANAGEMENT API app's router.
+        # They CAN be present if you want routes on the core management port too (less common for user-facing).
+        # Uncomment these lines ONLY if you also want your endpoints accessible on the dynamic management port.
+        # app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
+        # app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
+        # app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
+        # _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to core management API (dynamic port).")
+        # --------------------------------------------------------------------
+
         return app
 
     @classmethod
