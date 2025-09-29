@@ -21,16 +21,12 @@ MAX_BUFFER_SIZE = 50  # Keep only the last N entries per asset
 
 _logger = logging.getLogger(__name__)
 
-# --- Real-time Data Endpoint Handlers ---
+# Inside realtime_data_handler.py - PUBLIC VERSION (no auth)
 async def south_data_post(request):
-    """Handle POST data from South plugins to /south-data/{asset}"""
-    # --- Mark request as Core Management related to bypass standard auth on main API ---
-    # Setting this attribute tells the main API auth middleware to treat this specially.
-    # This is a common Fledge pattern for internal/public endpoints on the main API.
-    # MUST be set BEFORE the try block to ensure it's always applied.
-    request.is_core_mgt = True
-    # -------------------------------------------------------------------------
-
+    """Handle POST data from South plugins to /south-data/{asset} - PUBLIC"""
+    # NO AUTHENTICATION ATTEMPT NEEDED
+    # request.is_core_mgt = True  # <-- REMOVE THIS LINE
+    
     try:
         # 1. Extract asset name from the URL path
         asset_name = request.match_info.get('asset', None)
@@ -79,15 +75,12 @@ async def south_data_post(request):
         _logger.exception("Error handling south data POST for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
         raise web.HTTPInternalServerError(reason=f"Internal error processing data: {str(ex)}")
 
-
+# Similarly for get_realtime_data and get_all_realtime_data - REMOVE request.is_core_mgt = True
 async def get_realtime_data(request):
-    """Handle GET requests to /api/realtime/{asset}"""
-    # --- Mark request as Core Management related to bypass standard auth on main API ---
-    # Setting this attribute makes this endpoint publicly accessible on the main API port.
-    # MUST be set BEFORE the try block to ensure it's always applied.
-    request.is_core_mgt = True
-    # -------------------------------------------------------------------------
-
+    """Handle GET requests to /api/realtime/{asset} - PUBLIC"""
+    # NO AUTHENTICATION ATTEMPT NEEDED
+    # request.is_core_mgt = True  # <-- REMOVE THIS LINE
+    
     try:
         # 1. Extract asset name from the URL path
         asset_name = request.match_info.get('asset', None)
@@ -109,15 +102,11 @@ async def get_realtime_data(request):
         _logger.exception("Error fetching real-time data for asset %s: %s", asset_name if 'asset_name' in locals() else 'unknown', str(ex))
         raise web.HTTPInternalServerError(reason=f"Internal error fetching data: {str(ex)}")
 
-
 async def get_all_realtime_data(request):
-    """Handle GET requests to /api/realtime (fetch all assets)"""
-    # --- Mark request as Core Management related to bypass standard auth on main API ---
-    # Setting this attribute makes this endpoint publicly accessible on the main API port.
-    # MUST be set BEFORE the try block to ensure it's always applied.
-    request.is_core_mgt = True
-    # -------------------------------------------------------------------------
-
+    """Handle GET requests to /api/realtime (fetch all assets) - PUBLIC"""
+    # NO AUTHENTICATION ATTEMPT NEEDED
+    # request.is_core_mgt = True  # <-- REMOVE THIS LINE
+    
     try:
         # 1. Retrieve data for all assets (thread-safe)
         async with realtime_buffer_mutex:
@@ -133,48 +122,7 @@ async def get_all_realtime_data(request):
     except Exception as ex:
         _logger.exception("Error fetching all real-time data: %s", str(ex))
         raise web.HTTPInternalServerError(reason=f"Internal error fetching data: {str(ex)}")
-# --------------------------------------
 
-# --- CORS Middleware (Optional, if not using server.py middleware) ---
-def cors_middleware_factory():
-    """Factory to create a CORS middleware."""
-    # Importing web here is generally fine for middleware factories
-    from aiohttp import web
-    @web.middleware
-    async def cors_middleware(request, handler):
-        """CORS middleware to add appropriate headers."""
-        # --- Handle preflight OPTIONS requests ---
-        if request.method == 'OPTIONS':
-            headers = {
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, If-Match, If-None-Match',
-                'Access-Control-Max-Age': '86400',  # Cache preflight response for 24 hours (optional)
-            }
-            return web.Response(status=200, headers=headers)
-
-        # --- Process the actual request ---
-        try:
-            response = await handler(request)
-        except web.HTTPException as ex:
-            # Still add CORS headers to error responses if needed
-            if 'Access-Control-Allow-Origin' not in ex.headers:
-                ex.headers['Access-Control-Allow-Origin'] = '*'
-            if 'Access-Control-Allow-Methods' not in ex.headers:
-                ex.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-            raise ex # Re-raise the exception
-
-        # --- Add CORS headers to successful responses ---
-        if not response.headers.get('Access-Control-Allow-Origin'):
-            response.headers['Access-Control-Allow-Origin'] = '*'
-        if not response.headers.get('Access-Control-Allow-Methods'):
-            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        if not response.headers.get('Access-Control-Allow-Headers'):
-            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, If-Match, If-None-Match'
-
-        return response
-    return cors_middleware
-# ----------------------
 
 # Optional: Function to get the buffer for debugging or other internal use
 # Note: This synchronous function accessing an async lock is problematic.

@@ -460,45 +460,43 @@ class Server:
 
     service_app, service_server, service_server_handler = None, None, None
     core_app, core_server, core_server_handler = None, None, None
-    @web.middleware
-    async def public_endpoint_middleware(request, handler):
-        """
-        Middleware to bypass authentication for specific public endpoints.
-    
-        Checks if the request path starts with any of the PUBLIC_ENDPOINTS_PREFIXES.
-        If so, it marks the request to skip standard Fledge authentication by setting
-        request.is_core_mgt = True.
-        """
-        try:
-            path = request.path.lower()
-        
-            # Check if the request path matches any public path prefix
-            is_public_endpoint = any(path.startswith(prefix.lower()) for prefix in PUBLIC_ENDPOINTS_PREFIXES)
-        
-            if is_public_endpoint:
-                # --- Mark request as Core Management related to bypass standard auth ---
-                # Setting this attribute tells the main API auth middleware to treat this specially.
-                # This is a common Fledge pattern for internal/public endpoints on the main API.
-                request.is_core_mgt = True
-                _mw_logger.debug(f"Marked request to '{path}' as public (bypassing auth).")
-                # ---------------------------------------------------------------------
-        
-            # Continue with the normal request handling pipeline
-            # The standard auth middleware (if present) will check request.is_core_mgt
-            response = await handler(request)
+    # Add to realtime_data_handler.py
+    def simple_cors_middleware_factory():
+        """Factory to create a simple CORS middleware."""
+        @web.middleware
+        async def simple_cors_middleware(request, handler):
+            """Simple CORS middleware to add appropriate headers."""
+            # --- Handle preflight OPTIONS requests ---
+            if request.method == 'OPTIONS':
+                headers = {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, If-Match, If-None-Match',
+                    'Access-Control-Max-Age': '86400',  # Cache preflight response for 24 hours (optional)
+                }
+                return web.Response(status=200, headers=headers)
+
+            # --- Process the actual request ---
+            try:
+                response = await handler(request)
+            except web.HTTPException as ex:
+                # Still add CORS headers to error responses if needed
+                if 'Access-Control-Allow-Origin' not in ex.headers:
+                    ex.headers['Access-Control-Allow-Origin'] = '*'
+                if 'Access-Control-Allow-Methods' not in ex.headers:
+                    ex.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+                raise ex # Re-raise the exception
+
+            # --- Add CORS headers to successful responses ---
+            if not response.headers.get('Access-Control-Allow-Origin'):
+                response.headers['Access-Control-Allow-Origin'] = '*'
+            if not response.headers.get('Access-Control-Allow-Methods'):
+                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+            if not response.headers.get('Access-Control-Allow-Headers'):
+                response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, If-Match, If-None-Match'
+
             return response
-        
-        except web.HTTPException:
-            # Re-raise HTTP exceptions (e.g., 400, 404, 500)
-            raise
-        except Exception as ex:
-            # Log unexpected errors in the middleware itself
-            _mw_logger.exception("Unexpected error in public_endpoint_middleware for path %s: %s", request.path, str(ex))
-            # It's generally better to let the error propagate or return a 500,
-            # but re-raising the original handler's potential error is safer.
-            # For middleware errors, returning 500 might be appropriate, but
-            # re-raising preserves the original intent if the handler raised something.
-            raise # Re-raise the exception to be handled by error_middleware
+        return simple_cors_middleware
     @classmethod
     def get_certificates(cls):
         # TODO: FOGL-780
@@ -822,60 +820,34 @@ class Server:
             _logger.exception(ex)
             raise
 
-   # Inside server.py - Modified _make_app method
-
     @staticmethod
     def _make_app(auth_required=True, auth_method='any'):
-        """Creates the REST server (Main API on port 8081)
-
-        :rtype: web.Application
-        """
+        """Creates the REST server (Main API on port 8081)"""
+    
         # --- Prepare Middlewares ---
-        # Start with the error middleware (essential for error handling)
+        # Start with the error middleware
         mwares = [middleware.error_middleware]
-
-        # --- Add Public Endpoint Middleware (BEFORE auth middlewares) ---
-        # This middleware checks paths and sets request.is_core_mgt = True if needed.
-        # It must be added BEFORE the standard auth middlewares to be effective.
-        mwares.append(public_endpoint_middleware)
-        # ---------------------------------------------------------------
-
-        # Maintain this order for auth middlewares (they are executed in reverse).
-        # These standard Fledge auth middlewares will now see request.is_core_mgt = True
-        # for public endpoints and should bypass authentication.
-        if auth_method != "any":
-            if auth_method == "certificate":
-                mwares.append(middleware.certificate_login_middleware)
-            else:  # password
-                mwares.append(middleware.password_login_middleware)
-
-        if not auth_required:
-            # This middleware might be relevant for making endpoints public
-            mwares.append(middleware.optional_auth_middleware)
-        else:
-            mwares.append(middleware.auth_middleware)
+    
+        # Add simple CORS middleware
+        cors_mw = realtime_data_handler.simple_cors_middleware_factory()
+        mwares.insert(0, cors_mw) # Add CORS middleware
         # --------------------------
 
-        # Create the app with the (updated) middleware list
-        # Ensure AIOHTTP_CLIENT_MAX_SIZE is defined or imported in server.py
+        # Create the app with the (cleaned) middleware list
         app = web.Application(middlewares=mwares, client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
 
         # --- Setup Standard Main API Routes ---
-        # This sets up existing routes like /fledge/asset, /fledge/service (user view), etc.
-        admin_routes.setup(app)
+        admin_routes.setup(app) # This sets up existing routes like /fledge/asset, /fledge/service (user view), etc.
         # ------------------------------------
 
-        # --- Register the NEW Real-time Data Routes (on MAIN API port 8081) ---
-        # IMPORTANT: These lines ADD your new routes to the MAIN API app's router.
-        # They MUST be present for your endpoints to be accessible on port 8081.
-        # Ensure 'realtime_data_handler' is imported at the top of server.py
+        # --- Register the NEW Public Real-time Data Routes ---
         app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
         app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
         app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
-        _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to MAIN REST API (port 8081).")
-    # --------------------------------------------------------------------
+        _logger.info("Public real-time data routes (/south-data/, /api/realtime/) added to MAIN REST API (port 8081).")
+        # --------------------------------------------------------------------
 
         return app
     @classmethod
