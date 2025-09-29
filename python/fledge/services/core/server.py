@@ -61,7 +61,7 @@ __license__ = "Apache 2.0"
 __version__ = "${VERSION}"
 
 _logger = logger.setup(__name__, level=logging.INFO)
-
+_mw_logger = logging.getLogger(__name__)
 # FLEDGE_ROOT env variable
 _FLEDGE_DATA = os.getenv("FLEDGE_DATA", default=None)
 _FLEDGE_ROOT = os.getenv("FLEDGE_ROOT", default='/usr/local/fledge')
@@ -79,6 +79,10 @@ SERVICE_JWT_SECRET = 'f0gl@mp+Fl3dG3'
 SERVICE_JWT_ALGORITHM = 'HS512'
 SERVICE_JWT_EXP_DELTA_SECONDS = 30*60  # 30 minutes
 SERVICE_JWT_AUDIENCE = 'Fledge'
+PUBLIC_ENDPOINTS_PREFIXES = [
+    '/south-data/',      # POST endpoint for South plugins
+    '/api/realtime'      # GET endpoints for real-time data
+]
 
 # aiohttp client’s maximum size in a request, in bytes.
 # If a POST request exceeds this value, it raises an HTTPRequestEntityTooLarge exception.
@@ -456,7 +460,45 @@ class Server:
 
     service_app, service_server, service_server_handler = None, None, None
     core_app, core_server, core_server_handler = None, None, None
-
+    @web.middleware
+    async def public_endpoint_middleware(request, handler):
+        """
+        Middleware to bypass authentication for specific public endpoints.
+    
+        Checks if the request path starts with any of the PUBLIC_ENDPOINTS_PREFIXES.
+        If so, it marks the request to skip standard Fledge authentication by setting
+        request.is_core_mgt = True.
+        """
+        try:
+            path = request.path.lower()
+        
+            # Check if the request path matches any public path prefix
+            is_public_endpoint = any(path.startswith(prefix.lower()) for prefix in PUBLIC_ENDPOINTS_PREFIXES)
+        
+            if is_public_endpoint:
+                # --- Mark request as Core Management related to bypass standard auth ---
+                # Setting this attribute tells the main API auth middleware to treat this specially.
+                # This is a common Fledge pattern for internal/public endpoints on the main API.
+                request.is_core_mgt = True
+                _mw_logger.debug(f"Marked request to '{path}' as public (bypassing auth).")
+                # ---------------------------------------------------------------------
+        
+            # Continue with the normal request handling pipeline
+            # The standard auth middleware (if present) will check request.is_core_mgt
+            response = await handler(request)
+            return response
+        
+        except web.HTTPException:
+            # Re-raise HTTP exceptions (e.g., 400, 404, 500)
+            raise
+        except Exception as ex:
+            # Log unexpected errors in the middleware itself
+            _mw_logger.exception("Unexpected error in public_endpoint_middleware for path %s: %s", request.path, str(ex))
+            # It's generally better to let the error propagate or return a 500,
+            # but re-raising the original handler's potential error is safer.
+            # For middleware errors, returning 500 might be appropriate, but
+            # re-raising preserves the original intent if the handler raised something.
+            raise # Re-raise the exception to be handled by error_middleware
     @classmethod
     def get_certificates(cls):
         # TODO: FOGL-780
@@ -780,58 +822,27 @@ class Server:
             _logger.exception(ex)
             raise
 
-    # Inside _make_app in server.py
+   # Inside server.py - Modified _make_app method
+
     @staticmethod
     def _make_app(auth_required=True, auth_method='any'):
-        """Creates the REST server (Main API on port 8081)"""
+        """Creates the REST server (Main API on port 8081)
 
-        # Define the public endpoint middleware
-        @web.middleware
-        async def public_endpoint_middleware(request, handler):
-            """Middleware to bypass auth for public endpoints"""
-            # Check if this is a public endpoint (WITHOUT importing inside the function)
-            # Use the is_public_endpoint function directly if it's accessible
-            # Or inline the check:
-            path = request.path
-            if path.startswith('/south-data/') or path.startswith('/api/realtime') or path.startswith('/public/'):
-                # Skip authentication for public endpoints
-                # IMPORTANT: Still call await handler(request) to go through the normal pipeline
-                # for the matched route, including any other middlewares that come after this one.
-                response = await handler(request)
-                return response
-        
-            # For non-public endpoints, continue with normal auth flow
-            # (This part depends on your existing Fledge auth setup)
-            # You might need to adjust this to match exactly how Fledge does it.
-            # The logic below is a simplified placeholder.
-            if auth_method != "any":
-                if auth_method == "certificate":
-                    from fledge.common.web import middleware as auth_middleware
-                    return await auth_middleware.certificate_login_middleware(request, handler)
-                else:  # password
-                    from fledge.common.web import middleware as auth_middleware
-                    return await auth_middleware.password_login_middleware(request, handler)
-
-            if not auth_required:
-                from fledge.common.web import middleware as auth_middleware
-                return await auth_middleware.optional_auth_middleware(request, handler)
-            else:
-                from fledge.common.web import middleware as auth_middleware
-                return await auth_middleware.auth_middleware(request, handler)
-
+        :rtype: web.Application
+        """
         # --- Prepare Middlewares ---
-        # Start with the error middleware
+        # Start with the error middleware (essential for error handling)
         mwares = [middleware.error_middleware]
-    
-        # Add the public endpoint middleware AFTER error_middleware
-        # This means error_middleware will still catch errors from public_endpoint_middleware
-        # and handlers it calls.
-        mwares.append(public_endpoint_middleware) 
-    
+
+        # --- Add Public Endpoint Middleware (BEFORE auth middlewares) ---
+        # This middleware checks paths and sets request.is_core_mgt = True if needed.
+        # It must be added BEFORE the standard auth middlewares to be effective.
+        mwares.append(public_endpoint_middleware)
+        # ---------------------------------------------------------------
+
         # Maintain this order for auth middlewares (they are executed in reverse).
-        # IMPORTANT: Because public_endpoint_middleware comes BEFORE these,
-        # these standard auth middlewares will NOT be called for public endpoints.
-        # This is the desired behavior.
+        # These standard Fledge auth middlewares will now see request.is_core_mgt = True
+        # for public endpoints and should bypass authentication.
         if auth_method != "any":
             if auth_method == "certificate":
                 mwares.append(middleware.certificate_login_middleware)
@@ -846,13 +857,25 @@ class Server:
         # --------------------------
 
         # Create the app with the (updated) middleware list
+        # Ensure AIOHTTP_CLIENT_MAX_SIZE is defined or imported in server.py
         app = web.Application(middlewares=mwares, client_max_size=AIOHTTP_CLIENT_MAX_SIZE)
         # aiohttp web server logging level always set to warning
         web.access_logger.setLevel(logging.WARNING)
 
         # --- Setup Standard Main API Routes ---
-        admin_routes.setup(app) # This sets up existing routes like /fledge/asset, /fledge/service (user view), etc.
+        # This sets up existing routes like /fledge/asset, /fledge/service (user view), etc.
+        admin_routes.setup(app)
         # ------------------------------------
+
+        # --- Register the NEW Real-time Data Routes (on MAIN API port 8081) ---
+        # IMPORTANT: These lines ADD your new routes to the MAIN API app's router.
+        # They MUST be present for your endpoints to be accessible on port 8081.
+        # Ensure 'realtime_data_handler' is imported at the top of server.py
+        app.router.add_post('/south-data/{asset}', realtime_data_handler.south_data_post)
+        app.router.add_get('/api/realtime/{asset}', realtime_data_handler.get_realtime_data)
+        app.router.add_get('/api/realtime', realtime_data_handler.get_all_realtime_data)
+        _logger.info("Real-time data routes (/south-data/, /api/realtime/) added to MAIN REST API (port 8081).")
+    # --------------------------------------------------------------------
 
         return app
     @classmethod

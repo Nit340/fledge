@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+
+# FLEDGE_BEGIN
+# See: http://fledge-iot.readthedocs.io/
+# FLEDGE_END
+
+"""Real-time data handler for Fledge core API (port 8081)"""
+
 import json
 import asyncio
 from datetime import datetime
@@ -19,6 +27,7 @@ async def south_data_post(request):
     # --- Mark request as Core Management related to bypass standard auth on main API ---
     # Setting this attribute tells the main API auth middleware to treat this specially.
     # This is a common Fledge pattern for internal/public endpoints on the main API.
+    # MUST be set BEFORE the try block to ensure it's always applied.
     request.is_core_mgt = True
     # -------------------------------------------------------------------------
 
@@ -75,6 +84,7 @@ async def get_realtime_data(request):
     """Handle GET requests to /api/realtime/{asset}"""
     # --- Mark request as Core Management related to bypass standard auth on main API ---
     # Setting this attribute makes this endpoint publicly accessible on the main API port.
+    # MUST be set BEFORE the try block to ensure it's always applied.
     request.is_core_mgt = True
     # -------------------------------------------------------------------------
 
@@ -104,6 +114,7 @@ async def get_all_realtime_data(request):
     """Handle GET requests to /api/realtime (fetch all assets)"""
     # --- Mark request as Core Management related to bypass standard auth on main API ---
     # Setting this attribute makes this endpoint publicly accessible on the main API port.
+    # MUST be set BEFORE the try block to ensure it's always applied.
     request.is_core_mgt = True
     # -------------------------------------------------------------------------
 
@@ -124,7 +135,7 @@ async def get_all_realtime_data(request):
         raise web.HTTPInternalServerError(reason=f"Internal error fetching data: {str(ex)}")
 # --------------------------------------
 
-# --- CORS Middleware ---
+# --- CORS Middleware (Optional, if not using server.py middleware) ---
 def cors_middleware_factory():
     """Factory to create a CORS middleware."""
     # Importing web here is generally fine for middleware factories
@@ -175,4 +186,6 @@ def get_buffer_snapshot():
     """Return a copy of the current data buffer for debugging."""
     # Placeholder for the problematic sync function
     # As-is, this won't work correctly due to the async lock.
-    pass
+    # Consider using get_buffer_snapshot_async() instead.
+    pass # Or return a copy if you implement a thread-safe mechanism elsewhere
+# --------------------------------------
